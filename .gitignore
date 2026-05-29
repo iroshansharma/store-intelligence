@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+
+# Database/runtime files
+*.db
+store_intelligence.db
+test_temp.db
+
+# Output/generated telemetry
+output/*.jsonl
+output/events.jsonl
+
+# Challenge dataset / video files - DO NOT COMMIT
+data/
+datasets/
+clips/
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.zip
+
+# Tool generated files
+graphify-out/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
