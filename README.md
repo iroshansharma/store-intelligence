@@ -53,6 +53,10 @@ python -m pipeline.replay_events
 # Open the hosted web dashboard directly in your browser:
 # https://store-intelligence-api.onrender.com/
 #
+# Note: For the hosted Render demo, you can trigger a fresh seed of UTC time-aligned demo data
+# (105 events and 5 POS transactions matching the edge simulator for STORE_BLR_002) by running:
+# curl -X POST https://store-intelligence-api.onrender.com/demo/seed
+#
 # Or run the optional local Streamlit dashboard:
 streamlit run dashboard/app.py
 ```

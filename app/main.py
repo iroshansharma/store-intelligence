@@ -13,7 +13,7 @@ from app.config import settings
 from app.logging_config import logger
 
 # Import Routers
-from app import health, ingestion, metrics, funnel, heatmap, anomalies
+from app import health, ingestion, metrics, funnel, heatmap, anomalies, demo
 
 # Create tables
 Base.metadata.create_all(bind=engine)
@@ -846,6 +846,7 @@ app.include_router(metrics.router)
 app.include_router(funnel.router)
 app.include_router(heatmap.router)
 app.include_router(anomalies.router)
+app.include_router(demo.router)
 
 # Seed CSV on Startup
 @app.on_event("startup")
