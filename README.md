@@ -49,10 +49,14 @@ python -m pipeline.detect --simulate
 # 4. Replay the simulated telemetry events into the Ingestion Engine
 python -m pipeline.replay_events
 
-# 5. Launch the Live Operational Dashboard
+# 5. Open the Hosted Demo or Launch the Local Dashboard
+# Open the hosted web dashboard directly in your browser:
+# https://store-intelligence-api.onrender.com/
+#
+# Or run the optional local Streamlit dashboard:
 streamlit run dashboard/app.py
 ```
-*(If you do not have Streamlit installed, running `python dashboard/app.py` launches a terminal console dashboard instead!)*
+*(Streamlit remains available as an optional local dashboard. The production hosted demo is served cleanly as a self-contained, high-performance HTML/CSS/JS interface directly at the FastAPI root endpoint `/`!)*
 
 ---
 
