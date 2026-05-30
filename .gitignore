@@ -42,3 +42,7 @@ graphify-out/
 Thumbs.db
 .vscode/
 .idea/
+# ML model weights - do not commit
+*.pt
+*.onnx
+*.engine
