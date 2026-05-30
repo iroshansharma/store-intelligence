@@ -258,10 +258,21 @@ def run_simulation(store_id: str, camera_id: str, layout_path: str, output_path:
                 f.write(f"{store_id},{txn['txn_id']},{ts_str},{txn['value']:.2f}\n")
         print(f"Generated 10 synthetic POS transactions successfully in: {pos_output}")
 
-def run_video_inference(video_path: str, store_id: str, camera_id: str, layout_path: str, output_path: str):
+def run_video_inference(
+    video_path: str,
+    store_id: str,
+    camera_id: str,
+    layout_path: str,
+    output_path: str,
+    conf_threshold: float = 0.15,
+    frame_skip: int = 10,
+    max_frames: int = 3000,
+    debug_detections: bool = False
+):
     """
     Simulates OpenCV frame loading and attempts YOLOv8 inference if ultralytics is present.
-    If ultralytics is missing, details installation instructions and terminates gracefully.
+    Processes frame-by-frame with skip and max-frame bounds.
+    If YOLO tracking/detections fail, falls back to low-confidence detections or OpenCV motion detection.
     """
     print(f"Initializing CCTV video inference for video: {video_path}...")
     
@@ -302,7 +313,11 @@ def run_video_inference(video_path: str, store_id: str, camera_id: str, layout_p
         
         events_emitted = []
         frame_idx = 0
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        yolo_detections_count = 0
+        tracked_ids = set()
+        
+        # Initialize background subtractor for OpenCV motion detection fallback
+        fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=True)
         
         print("Running detection pipeline...")
         while True:
@@ -310,34 +325,67 @@ def run_video_inference(video_path: str, store_id: str, camera_id: str, layout_p
             if not ret:
                 break
                 
-            # Run YOLO on frame, filtering for "person" class (class 0 in COCO)
-            results = model.track(frame, persist=True, classes=[0], verbose=False)
+            if frame_idx >= max_frames:
+                break
+                
+            if frame_idx % frame_skip != 0:
+                frame_idx += 1
+                continue
+                
+            timestamp = datetime.datetime.now(timezone.utc)
             
+            # Run YOLO on frame, filtering for "person" class (class 0 in COCO)
+            # Use conf=conf_threshold to restrict low-confidence detections
+            results = model.track(frame, persist=True, conf=conf_threshold, classes=[0], verbose=False)
+            
+            person_boxes = []
             if results and results[0].boxes:
-                boxes = results[0].boxes
-                for box in boxes:
+                for box in results[0].boxes:
+                    conf = float(box.conf[0])
+                    if conf >= conf_threshold:
+                        person_boxes.append(box)
+            
+            if person_boxes:
+                yolo_detections_count += len(person_boxes)
+                for box_idx, box in enumerate(person_boxes):
                     # Retrieve bounding coordinates and confidence
                     xyxy = box.xyxy[0].tolist()
                     conf = float(box.conf[0])
-                    
-                    # Track ID
-                    track_id = int(box.id[0]) if box.id is not None else 0
-                    visitor_id = tracker.get_visitor_id(track_id)
                     
                     # Center of bounding box
                     cx = (xyxy[0] + xyxy[2]) / 2.0
                     cy = (xyxy[1] + xyxy[3]) / 2.0
                     
-                    # Map to layout zones
-                    zone_id = mapper.get_zone_at_coordinate(camera_id, cx, cy)
+                    # Normalize camera ID and perform zone assignment with coordinate approximations
+                    norm_cam = camera_id.upper().replace(" ", "_")
+                    if "CAM_1" in norm_cam or "CAM1" in norm_cam or "ENTRY" in norm_cam:
+                        mapped_cam_id = "CAM_ENTRY_01"
+                    elif "CAM_4" in norm_cam or "CAM4" in norm_cam or "BILLING" in norm_cam:
+                        mapped_cam_id = "CAM_BILLING_01"
+                    else:
+                        mapped_cam_id = "CAM_FLOOR_01"
+                        
+                    zone_id = mapper.get_zone_at_coordinate(mapped_cam_id, cx, cy)
+                    if not zone_id:
+                        # Spatial approximation fallbacks
+                        if mapped_cam_id == "CAM_ENTRY_01":
+                            zone_id = "ENTRY"
+                        elif mapped_cam_id == "CAM_BILLING_01":
+                            zone_id = "BILLING"
+                        else:
+                            if cy < 800:
+                                zone_id = "SKINCARE" if cx < 960 else "HAIRCARE"
+                            else:
+                                zone_id = "MAKEUP"
+                                
+                    # Determine event type (ZONE_ENTER on first few detections/periodically, DWELL otherwise)
+                    event_type = "ZONE_ENTER" if frame_idx % 30 == 0 else "ZONE_DWELL"
                     
-                    # Determine Event Type
-                    # Simply map active positions to ENTER/DWELL events based on zone mappings
-                    timestamp = datetime.datetime.utcnow()
-                    
-                    if zone_id:
-                        event_type = "ZONE_ENTER" if frame_idx % 30 == 0 else "ZONE_DWELL"
-                        # Generate JSONL
+                    if box.id is not None:
+                        track_id = int(box.id[0])
+                        tracked_ids.add(track_id)
+                        visitor_id = tracker.get_visitor_id(track_id)
+                        
                         evt = emit_event(
                             store_id=store_id,
                             camera_id=camera_id,
@@ -349,6 +397,88 @@ def run_video_inference(video_path: str, store_id: str, camera_id: str, layout_p
                             confidence=conf
                         )
                         events_emitted.append(evt)
+                        if debug_detections:
+                            print(f"[DEBUG YOLO] Tracked Person: visitor_id={visitor_id}, zone_id={zone_id}, conf={conf:.2f}")
+                    else:
+                        # YOLO detects persons but no tracking events are generated (tracking ID is missing)
+                        # Emit low-confidence zone activity event based on bounding box center location
+                        untracked_visitor_id = f"VIS_untracked_f{frame_idx}_b{box_idx}"
+                        evt = emit_event(
+                            store_id=store_id,
+                            camera_id=camera_id,
+                            visitor_id=untracked_visitor_id,
+                            event_type=event_type,
+                            timestamp=timestamp,
+                            zone_id=zone_id,
+                            dwell_ms=1000,
+                            confidence=min(conf, 0.15)
+                        )
+                        events_emitted.append(evt)
+                        if debug_detections:
+                            print(f"[DEBUG YOLO] Untracked Person Fallback: visitor_id={untracked_visitor_id}, zone_id={zone_id}, conf={conf:.2f}")
+            else:
+                # YOLO detected NO persons -> OpenCV motion fallback!
+                # Apply background subtraction
+                fgmask = fgbg.apply(frame)
+                
+                # Morphological noise removal & thresholding
+                _, thresh = cv2.threshold(fgmask, 200, 255, cv2.THRESH_BINARY)
+                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+                thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+                thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+                
+                # Find contours
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                
+                for c_idx, contour in enumerate(contours):
+                    area = cv2.contourArea(contour)
+                    if area < 500:  # Ignore small motion noise
+                        continue
+                        
+                    # Compute contour centroid
+                    x, y, w, h = cv2.boundingRect(contour)
+                    cx = x + w / 2.0
+                    cy = y + h / 2.0
+                    
+                    # Normalize camera ID and perform zone assignment with coordinate approximations
+                    norm_cam = camera_id.upper().replace(" ", "_")
+                    if "CAM_1" in norm_cam or "CAM1" in norm_cam or "ENTRY" in norm_cam:
+                        mapped_cam_id = "CAM_ENTRY_01"
+                    elif "CAM_4" in norm_cam or "CAM4" in norm_cam or "BILLING" in norm_cam:
+                        mapped_cam_id = "CAM_BILLING_01"
+                    else:
+                        mapped_cam_id = "CAM_FLOOR_01"
+                        
+                    zone_id = mapper.get_zone_at_coordinate(mapped_cam_id, cx, cy)
+                    if not zone_id:
+                        # Spatial approximation fallbacks
+                        if mapped_cam_id == "CAM_ENTRY_01":
+                            zone_id = "ENTRY"
+                        elif mapped_cam_id == "CAM_BILLING_01":
+                            zone_id = "BILLING"
+                        else:
+                            if cy < 800:
+                                zone_id = "SKINCARE" if cx < 960 else "HAIRCARE"
+                            else:
+                                zone_id = "MAKEUP"
+                                
+                    event_type = "ZONE_ENTER" if frame_idx % 30 == 0 else "ZONE_DWELL"
+                    motion_visitor_id = f"VIS_motion_f{frame_idx}_c{c_idx}"
+                    
+                    evt = emit_event(
+                        store_id=store_id,
+                        camera_id=camera_id,
+                        visitor_id=motion_visitor_id,
+                        event_type=event_type,
+                        timestamp=timestamp,
+                        zone_id=zone_id,
+                        dwell_ms=1000,
+                        confidence=0.15,
+                        metadata={"source": "motion_fallback", "area": area}
+                    )
+                    events_emitted.append(evt)
+                    if debug_detections:
+                        print(f"[DEBUG MOTION] Motion Fallback Contour: visitor_id={motion_visitor_id}, zone_id={zone_id}, area={area}")
                         
             frame_idx += 1
             if frame_idx % 100 == 0:
@@ -366,6 +496,10 @@ def run_video_inference(video_path: str, store_id: str, camera_id: str, layout_p
                 f.write(ev + "\n")
                 
         print(f"Video inference completed! Generated {len(events_emitted)} tracking events in: {output_path}")
+        print(f"total frames processed: {frame_idx}")
+        print(f"total YOLO person detections: {yolo_detections_count}")
+        print(f"total tracked IDs: {len(tracked_ids)}")
+        print(f"total events generated: {len(events_emitted)}")
 
 def main():
     parser = argparse.ArgumentParser(description="Purplle Store Intelligence System Detection & Simulation Pipeline")
@@ -379,12 +513,28 @@ def main():
     parser.add_argument("--generate-pos", action="store_true", help="Generate and save updated matching POS transactions CSV.")
     parser.add_argument("--pos-output", type=str, default="sample_data/pos_transactions.csv", help="Path to save the generated POS transactions CSV.")
     
+    # CCTV video configurations
+    parser.add_argument("--conf-threshold", type=float, default=0.15, help="Confidence threshold for YOLO person detection.")
+    parser.add_argument("--frame-skip", type=int, default=10, help="Process every Nth frame.")
+    parser.add_argument("--max-frames", type=int, default=3000, help="Maximum number of frames to process.")
+    parser.add_argument("--debug-detections", action="store_true", help="Print debug logs for person detections.")
+    
     args = parser.parse_args()
     
     if args.simulate:
         run_simulation(args.store_id, args.camera_id, args.layout, args.output, args.start_time, args.generate_pos, args.pos_output)
     elif args.video:
-        run_video_inference(args.video, args.store_id, args.camera_id, args.layout, args.output)
+        run_video_inference(
+            args.video,
+            args.store_id,
+            args.camera_id,
+            args.layout,
+            args.output,
+            conf_threshold=args.conf_threshold,
+            frame_skip=args.frame_skip,
+            max_frames=args.max_frames,
+            debug_detections=args.debug_detections
+        )
     else:
         print("Error: Either --simulate or --video <path> must be supplied.", file=sys.stderr)
         parser.print_help()

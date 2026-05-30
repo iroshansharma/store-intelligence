@@ -86,6 +86,11 @@ Generate synthetic events simulating entries, exits, zone dwells, queue spikes, 
   python -m pipeline.detect --simulate --start-time 2026-03-03T14:00:00Z --store-id STORE_BLR_002 --camera-id CAM_ENTRY_01 --output output/events.jsonl
   ```
 
+- **Running on Provided CCTV Footage** (uses deep-learning YOLOv8 detection, low-confidence tracking fallback, and background subtraction motion fallback):
+  ```bash
+  python -m pipeline.detect --video "E:\Downloads\Purplle_CCTV_Dataset\CCTV Footage\CAM 1.mp4" --store-id STORE_BLR_002 --camera-id CAM_1 --output output/cam1_events.jsonl --conf-threshold 0.15 --frame-skip 10 --max-frames 3000 --debug-detections
+  ```
+
 ---
 
 ## 7. How to Replay Events into API
