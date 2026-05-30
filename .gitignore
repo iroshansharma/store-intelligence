@@ -46,3 +46,8 @@ Thumbs.db
 *.pt
 *.onnx
 *.engine
+
+# ML model weights - do not commit
+*.pt
+*.onnx
+*.engine
